@@ -1,34 +1,27 @@
 import requests
-from datetime import datetime, timedelta
-from pathlib import Path
+import datetime
+from icalendar import Calendar, Event
 
 POSTNUMMER = "56632"
-URL = f"https://portal.postnord.com/api/sendoutarrival/{POSTNUMMER}"
-ical_lines = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//Klingstal//Postutdelning//EN"
-]
-
-response = requests.get(URL)
+url = f"https://portal.postnord.com/api/sendoutarrival/{POSTNUMMER}"
+headers = {"User-Agent": "Mozilla/5.0"}
+response = requests.get(url, headers=headers)
 response.raise_for_status()
 data = response.json()
-dates = data.get("dates", [])[:2]  # De två närmaste dagarna
 
-for date_str in dates:
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    dt_start = dt.strftime("%Y%m%d")
-    dt_end = (dt + timedelta(days=1)).strftime("%Y%m%d")
+cal = Calendar()
+cal.add("prodid", "-//Postutdelning//SE")
+cal.add("version", "2.0")
 
-    ical_lines += [
-        "BEGIN:VEVENT",
-        f"DTSTART;VALUE=DATE:{dt_start}",
-        f"DTEND;VALUE=DATE:{dt_end}",
-        f"SUMMARY:Postutdelning",
-        "END:VEVENT"
-    ]
+for day in data.get("deliveryDays", []):
+    dt = datetime.datetime.strptime(day, "%Y-%m-%d").date()
+    event = Event()
+    event.add("summary", "Postutdelning 📬")
+    event.add("dtstart", dt)
+    event.add("dtend", dt + datetime.timedelta(days=1))
+    event.add("dtstamp", datetime.datetime.now())
+    cal.add_component(event)
 
-ical_lines.append("END:VCALENDAR")
-
-Path("docs/postutdelning.ics").write_text("\n".join(ical_lines), encoding="utf-8")
+with open("public/postutdelning.ics", "wb") as f:
+    f.write(cal.to_ical())
 
