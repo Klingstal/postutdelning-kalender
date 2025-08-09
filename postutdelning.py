@@ -22,6 +22,6 @@ for day in data.get("deliveryDays", []):
     event.add("dtstamp", datetime.datetime.now())
     cal.add_component(event)
 
-with open("public/postutdelning.ics", "wb") as f:
+with open("docs/postutdelning.ics", "wb") as f:
     f.write(cal.to_ical())
 
