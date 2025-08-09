@@ -2,61 +2,70 @@ import requests
 import json
 import time
 import logging
-from pathlib import Path
+import os
 
-# --- Konfiguration ---
-API_KEY = "DIN_API_KEY"
-BASE_URL = "https://exempel.com/rest/location/v1/surcharge/manage"
-CACHE_FILE = Path("health_cache.json")
-LOG_FILE = "script.log"
+# === KONFIGURATION ===
+API_KEY = "DIN_API_NYCKEL_HÄR"
+CACHE_FILE = "health_cache.json"
+CACHE_TTL = 3600  # sekunder (1 timme)
+LOG_FILE = "health_check.log"
 
-# --- Logging ---
+# === LOGGNING ===
 logging.basicConfig(
-    filename=LOG_FILE,
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 
-def fetch_health():
-    """Hämtar hälsostatus från API:t med caching och felhantering."""
-    # Kolla cache
-    if CACHE_FILE.exists():
+def load_cache():
+    if os.path.exists(CACHE_FILE):
         try:
-            with open(CACHE_FILE, "r") as f:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Om cachen är mindre än 1 timme gammal, använd den
-                if time.time() - data["timestamp"] < 3600:
-                    logging.info("Använder cache-data för health check.")
-                    return data["response"]
+            # Om datan är gammal, returnera None
+            if time.time() - data.get("timestamp", 0) < CACHE_TTL:
+                return data.get("response")
         except Exception as e:
-            logging.warning(f"Cache-läsfel: {e}")
+            logging.warning(f"Kunde inte läsa cache: {e}")
+    return None
 
-    # Hämtar från API
-    url = f"{BASE_URL}/health?apikey={API_KEY}"
-    while True:
-        try:
-            logging.info(f"Hämtar health check från {url}")
-            response = requests.get(url, timeout=10)
-            if response.status_code == 429:
-                logging.warning("API-limit nådd. Väntar 60 sek...")
-                time.sleep(60)
-                continue
-            response.raise_for_status()
-            result = response.json()
+def save_cache(response):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time(), "response": response}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning(f"Kunde inte spara cache: {e}")
 
-            # Spara i cache
-            with open(CACHE_FILE, "w") as f:
-                json.dump({"timestamp": time.time(), "response": result}, f)
+def health_check():
+    # Försök använda cache först
+    cached = load_cache()
+    if cached:
+        logging.info("Använder cachead data")
+        return cached
 
-            logging.info("Health check hämtad och cachad.")
-            return result
-        except requests.RequestException as e:
-            logging.error(f"Fel vid API-anrop: {e}")
-            time.sleep(10)
+    url = f"https://host/rest/location/v1/surcharge/manage/health?apikey={API_KEY}"
+    try:
+        logging.info(f"Anropar: {url}")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        save_cache(data)
+        return data
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Nätverksfel: {e}")
+    except Exception as e:
+        logging.error(f"Oväntat fel: {e}")
+    return None
 
 def main():
-    health_data = fetch_health()
-    print(json.dumps(health_data, indent=2, ensure_ascii=False))
+    result = health_check()
+    if result:
+        logging.info(f"API-svar: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    else:
+        logging.error("Kunde inte hämta data.")
 
 if __name__ == "__main__":
     main()
