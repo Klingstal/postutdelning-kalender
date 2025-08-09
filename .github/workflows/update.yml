@@ -1,36 +1,48 @@
-name: Update ICS File
+name: Uppdatera och publicera kalender
 
 on:
+  workflow_dispatch:  # Kan köras manuellt i GitHub UI
   schedule:
-    - cron: '0 6 * * *'  # Körs varje dag kl 06:00 UTC
-  workflow_dispatch:      # Gör att du kan köra workflow manuellt i GitHub UI
+    - cron: "0 7 * * *"  # Kör varje dag kl 07:00 UTC (justera efter behov)
 
 jobs:
-  update-ics:
+  update-and-publish:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repo utan submoduler
+        uses: actions/checkout@v4
         with:
-          submodules: false 
+          fetch-depth: 0
+          submodules: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Node.js (eller Python om du använder det)
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.x'
+          node-version: 20
 
       - name: Install dependencies
-        run: pip install requests icalendar
+        run: npm install
 
-      - name: Run script to update ICS
-        run: python postutdelning.py
+      - name: Run update script
+        run: node index.js   # Byt till python postutdelning.py om det är Python
 
-      - name: Commit and push changes
+      - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/postutdelning.ics
-          git commit -m "Automatisk uppdatering av postutdelning.ics" || echo "No changes to commit"
-          git push
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Automatisk uppdatering av kalenderfil"
+            git push
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs  # Mappen där din .ics-fil hamnar, t.ex. docs/
