@@ -3,75 +3,92 @@ import datetime
 from icalendar import Calendar, Event
 import time
 import os
+import json
 
 # --- KONFIGURATION ---
 POSTNUMMER = "56632"
-API_KEY = "b70f8701f471bc45177837a5141bf431"
+API_KEY = "447ae136a7bad7f1849b3489e90edc45"
+CACHE_DIR = "cache"
+LOG_FILE = "cache/api_call_count.log"
+POSTALCODE_CACHE_FILE = os.path.join(CACHE_DIR, f"postalcode_{POSTNUMMER}.json")
+SORTPATTERN_CACHE_FILE = os.path.join(CACHE_DIR, "sortpatterns.json")
 
-# --- Globala headers med User-Agent och apikey ---
+# --- Globala headers ---
 HEADERS = {
     "apikey": API_KEY,
     "User-Agent": "Mozilla/5.0 (compatible; PostutdelningScript/1.0; +https://dindoman.se)"
 }
 
-# --- Funktion för GET med retry vid 429 ---
+# --- Hjälpfunktion för att logga antal anrop ---
+def log_api_call():
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    count = 0
+    if os.path.isfile(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            content = f.read()
+            if content.isdigit():
+                count = int(content)
+    count += 1
+    with open(LOG_FILE, "w") as f:
+        f.write(str(count))
+    print(f"API-anrop totalt under detta körning: {count}")
+
+# --- Hjälpfunktion: GET med retry och hantering av 429 ---
 def get_with_retry(url, params=None, max_attempts=5, wait_sec=30):
     attempts = 0
     while attempts < max_attempts:
-        try:
-            response = requests.get(url, headers=HEADERS, params=params)
+        response = requests.get(url, headers=HEADERS, params=params)
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            wait = int(retry_after) if retry_after and retry_after.isdigit() else wait_sec
+            attempts += 1
+            print(f"Rate limit reached (429). Retry-After: {wait} sekunder. Väntar och försöker igen... (försök {attempts} av {max_attempts})")
+            time.sleep(wait)
+        else:
             response.raise_for_status()
+            log_api_call()
             return response.json()
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", wait_sec))
-                attempts += 1
-                print(f"Rate limit reached (429). Retry-After: {retry_after} sekunder. Väntar och försöker igen... (försök {attempts} av {max_attempts})")
-                time.sleep(retry_after)
-            else:
-                print(f"HTTPError: {e} - {response.text}")
-                raise
     raise Exception(f"Misslyckades efter {max_attempts} försök p.g.a. rate limit (429).")
 
-# --- Health Check för API ---
-def health_check():
-    url = "https://api2.postnord.com/rest/location/v1/surcharge/manage/health"
-    print("Kör Health Check mot Postnord API...")
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code == 200:
-        print("Health Check OK:", response.json())
-    else:
-        raise Exception(f"Health Check misslyckades med statuskod {response.status_code}: {response.text}")
+# --- Läs/skriv cache ---
+def load_cache(filename, max_age_sec):
+    if not os.path.isfile(filename):
+        return None
+    mod_time = os.path.getmtime(filename)
+    age = time.time() - mod_time
+    if age > max_age_sec:
+        print(f"Cachen {filename} är gammal ({age:.0f} sek), hämtar nytt.")
+        return None
+    with open(filename, "r", encoding="utf-8") as f:
+        print(f"Läser data från cache {filename}.")
+        return json.load(f)
 
-# --- Hämta info om postnummer (X, Y, S) ---
-#def get_postalcode_info(postnummer):
-#    url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
-#    params = {
-#        "ids": f"postalcode:{postnummer}"
-#    }
-#   data = get_with_retry(url, params=params)
-#   if not data or "data" not in data or len(data["data"]) == 0:
-#       raise Exception("Postnummerdata saknas eller ogiltigt format.")
-#   return data["data"][0]  # första posten
+def save_cache(filename, data):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    print(f"Sparar data till cache {filename}.")
 
-def get_postalcode_info_once(postnummer):
+# --- Hämta postnummerinfo med caching ---
+def get_postalcode_info(postnummer):
+    cache = load_cache(POSTALCODE_CACHE_FILE, max_age_sec=24*3600)  # 1 dag
+    if cache:
+        return cache
+    print(f"Hämtar postnummerinfo för {postnummer} från API...")
     url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
-    params = {
-        "ids": f"postalcode:{postnummer}"
-    }
-    print(f"Försöker hämta info för postnummer {postnummer}...")
-    response = requests.get(url, headers=HEADERS, params=params)
-    print("Statuskod:", response.status_code)
-    print("Headers:", response.headers)
-    print("Svar:", response.text)
-    response.raise_for_status()
-    data = response.json()
+    params = {"ids": f"postalcode:{postnummer}"}
+    data = get_with_retry(url, params=params)
     if not data or "data" not in data or len(data["data"]) == 0:
         raise Exception("Postnummerdata saknas eller ogiltigt format.")
+    save_cache(POSTALCODE_CACHE_FILE, data["data"][0])
     return data["data"][0]
 
-# --- Hämta sorteringsmönster (X/Y/H) för datumintervallet ---
+# --- Hämta sorteringsmönster med caching ---
 def get_sort_patterns(from_date, to_date):
+    cache = load_cache(SORTPATTERN_CACHE_FILE, max_age_sec=24*3600)  # 1 dag
+    if cache:
+        return cache
+    print(f"Hämtar sorteringsmönster från API...")
     url = "https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
     params = {
         "fromdate": from_date.strftime("%Y-%m-%d"),
@@ -80,63 +97,55 @@ def get_sort_patterns(from_date, to_date):
     data = get_with_retry(url, params=params)
     if not data or len(data) == 0:
         raise Exception("Sorteringsdata saknas eller tomt svar.")
-    # data är en lista av dicts med "plannedDate" och "patternName"
-    return {item["plannedDate"]: item["patternName"] for item in data}
+    patterns = {item["plannedDate"]: item["patternName"] for item in data}
+    save_cache(SORTPATTERN_CACHE_FILE, patterns)
+    return patterns
 
-# --- Main funktion ---
+# --- Skapa kalenderfil ---
+def create_calendar(utdelningsdagar):
+    cal = Calendar()
+    cal.add("prodid", "-//Postutdelning//SE")
+    cal.add("version", "2.0")
+
+    for dt in utdelningsdagar:
+        event = Event()
+        event.add("summary", "Postutdelning 📬")
+        event.add("dtstart", dt)
+        event.add("dtend", dt + datetime.timedelta(days=1))
+        event.add("dtstamp", datetime.datetime.now())
+        cal.add_component(event)
+
+    os.makedirs("docs", exist_ok=True)
+    ics_path = "docs/postutdelning.ics"
+    with open(ics_path, "wb") as f:
+        f.write(cal.to_ical())
+    print(f"Kalenderfil skapad med {len(utdelningsdagar)} utdelningsdagar på {ics_path}.")
+
+# --- Main ---
 def main():
-    health_check()  # Kör health check först
-    
     idag = datetime.date.today()
     slutdatum = idag + datetime.timedelta(days=90)
 
-    print(f"Hämtar postnummerinfo för {POSTNUMMER}...")
-    #postalcode_info = get_postalcode_info(POSTNUMMER)
-    postalcode_info = get_postalcode_info_once(POSTNUMMER)
-
+    postalcode_info = get_postalcode_info(POSTNUMMER)
     print("Postnummerinfo:", postalcode_info)
 
-    print(f"Hämtar sorteringsmönster från {idag} till {slutdatum}...")
     sort_patterns = get_sort_patterns(idag, slutdatum)
     print(f"Hämtade {len(sort_patterns)} sorteringsdagar.")
 
     post_pattern = postalcode_info.get("patternName")
     if not post_pattern:
         raise Exception("Kunde inte hitta postnummerns sorteringsmönster (X/Y/S).")
-
     print(f"Postnummer {POSTNUMMER} har sorteringsmönster: {post_pattern}")
 
-    # --- Skapa kalender ---
-    cal = Calendar()
-    cal.add("prodid", "-//Postutdelning//SE")
-    cal.add("version", "2.0")
-
-    utdelningsdagar = 0
-
+    utdelningsdagar = []
     for datum_str, pattern in sort_patterns.items():
-        # Regeln från dokumentationen:
-        # Om dagen är X och postnumrets pattern är X eller S → utdelning
-        # Om dagen är Y och postnumrets pattern är Y eller S → utdelning
-        # H är helg/helgdag, ingen utdelning
-        if pattern == "H":
+        if pattern == "H":  # helg/helgdag, ingen utdelning
             continue
         if post_pattern == "S" or post_pattern == pattern:
             dt = datetime.datetime.strptime(datum_str, "%Y-%m-%d").date()
-            event = Event()
-            event.add("summary", "Postutdelning 📬")
-            event.add("dtstart", dt)
-            event.add("dtend", dt + datetime.timedelta(days=1))
-            event.add("dtstamp", datetime.datetime.now())
-            cal.add_component(event)
-            utdelningsdagar += 1
+            utdelningsdagar.append(dt)
 
-    # --- Spara kalenderfil ---
-    os.makedirs("docs", exist_ok=True)
-    ics_path = "docs/postutdelning.ics"
-    with open(ics_path, "wb") as f:
-        f.write(cal.to_ical())
-
-    print(f"Kalenderfil skapad med {utdelningsdagar} utdelningsdagar på {ics_path}.")
+    create_calendar(utdelningsdagar)
 
 if __name__ == "__main__":
     main()
