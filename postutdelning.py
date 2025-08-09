@@ -6,7 +6,7 @@ import os
 
 # --- KONFIGURATION ---
 POSTNUMMER = "56632"
-API_KEY = "447ae136a7bad7f1849b3489e90edc45"
+API_KEY = "b70f8701f471bc45177837a5141bf431"
 
 # --- Globala headers med User-Agent och apikey ---
 HEADERS = {
