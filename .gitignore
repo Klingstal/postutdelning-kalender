@@ -1,0 +1,30 @@
+# Python relaterade filer
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtuella miljöer
+venv/
+env/
+
+# OS-specifika filer
+.DS_Store
+Thumbs.db
+
+# Loggfiler
+*.log
+
+# Editor-relaterade filer
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Node-moduler om du skulle använda node
+node_modules/
+
+# Bygg- och distributionsmappar
+dist/
+build/
+
