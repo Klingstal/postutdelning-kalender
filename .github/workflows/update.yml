@@ -1,4 +1,6 @@
 name: Uppdatera och publicera kalender
+permissions:
+  contents: write
 
 on:
   workflow_dispatch:  # Kan köras manuellt i GitHub UI
