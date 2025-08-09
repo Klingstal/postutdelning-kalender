@@ -16,22 +16,22 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Setup Node.js (eller Python om du använder det)
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          node-version: 20
+          python-version: "3.x"
 
-#      - name: Install dependencies
-#        run: npm install
+      - name: Install dependencies
+        run: pip install requests icalendar
 
       - name: Run update script
-        run: node index.js   # Byt till python postutdelning.py om det är Python
+        run: python postutdelning.py
 
       - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add docs/postutdelning.ics
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
@@ -45,4 +45,4 @@ jobs:
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs  # Mappen där din .ics-fil hamnar, t.ex. docs/
+          publish_dir: ./docs
