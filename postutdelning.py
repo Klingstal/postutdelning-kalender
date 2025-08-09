@@ -1,126 +1,111 @@
 import requests
 import datetime
 from icalendar import Calendar, Event
-import os
 import time
+import os
 
 # --- KONFIGURATION ---
 POSTNUMMER = "56632"
 API_KEY = "447ae136a7bad7f1849b3489e90edc45"
 
-# --- Datumintervall ---
-idag = datetime.date.today()
-slutdatum = idag + datetime.timedelta(days=90)
+# --- Globala headers med User-Agent och apikey ---
+HEADERS = {
+    "apikey": API_KEY,
+    "User-Agent": "Mozilla/5.0 (compatible; PostutdelningScript/1.0; +https://dindoman.se)"
+}
 
-# --- Hämta postnummer-typ (X, Y eller S) med retry vid 429 ---
+# --- Funktion för GET med retry vid 429 ---
+def get_with_retry(url, params=None, max_attempts=5, wait_sec=30):
+    attempts = 0
+    while attempts < max_attempts:
+        try:
+            response = requests.get(url, headers=HEADERS, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:
+                attempts += 1
+                print(f"Rate limit reached (429). Väntar {wait_sec} sekunder och försöker igen... (försök {attempts} av {max_attempts})")
+                time.sleep(wait_sec)
+            else:
+                print(f"HTTPError: {e} - {response.text}")
+                raise
+    raise Exception(f"Misslyckades efter {max_attempts} försök p.g.a. rate limit (429).")
+
+# --- Hämta info om postnummer (X, Y, S) ---
 def get_postalcode_info(postnummer):
     url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
     params = {
-        "apikey": API_KEY,
         "ids": f"postalcode:{postnummer}"
     }
-    attempts = 5
-    for attempt in range(attempts):
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            print(f"Postnummerdata: {data}")  # debug
-            return data
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 429:
-                wait = 10
-                print(f"Rate limit reached (429). Väntar {wait} sekunder och försöker igen... (försök {attempt+1} av {attempts})")
-                time.sleep(wait)
-            else:
-                print(f"HTTPError vid hämtning av postnummerinfo: {e}")
-                raise
-    raise Exception("Misslyckades hämta postnummerinfo efter flera försök")
+    data = get_with_retry(url, params=params)
+    if not data or "data" not in data or len(data["data"]) == 0:
+        raise Exception("Postnummerdata saknas eller ogiltigt format.")
+    return data["data"][0]  # första posten
 
-# --- Hämta sorteringsmönster (X, Y eller H dagar) med retry vid 429 ---
-def get_sortpatterns(from_date, to_date):
+# --- Hämta sorteringsmönster (X/Y/H) för datumintervallet ---
+def get_sort_patterns(from_date, to_date):
     url = "https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
     params = {
-        "apikey": API_KEY,
         "fromdate": from_date.strftime("%Y-%m-%d"),
         "todate": to_date.strftime("%Y-%m-%d")
     }
-    attempts = 5
-    for attempt in range(attempts):
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            print(f"Sorteringsmönsterdata: {data}")  # debug
-            return data
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 429:
-                wait = 10
-                print(f"Rate limit reached (429). Väntar {wait} sekunder och försöker igen... (försök {attempt+1} av {attempts})")
-                time.sleep(wait)
-            else:
-                print(f"HTTPError vid hämtning av sorteringsmönster: {e}")
-                raise
-    raise Exception("Misslyckades hämta sorteringsmönster efter flera försök")
+    data = get_with_retry(url, params=params)
+    if not data or len(data) == 0:
+        raise Exception("Sorteringsdata saknas eller tomt svar.")
+    # data är en lista av dicts med "plannedDate" och "patternName"
+    return {item["plannedDate"]: item["patternName"] for item in data}
 
-# --- Tolka vilka dagar som är utdelningsdagar för postnumret ---
-def calculate_delivery_days(postalcode_info, sortpatterns):
-    # Hämta typen av postnummer (X, Y eller S)
-    postnummer_typ = None
-    if postalcode_info and len(postalcode_info) > 0:
-        postnummer_typ = postalcode_info[0].get("postalCodeType", None)
-    print(f"Postnummertyp: {postnummer_typ}")
-
-    utdelningsdagar = []
-    for pattern in sortpatterns:
-        pattern_name = pattern.get("patternName", None)
-        planned_date = pattern.get("plannedDate", None)
-        if planned_date is None or pattern_name is None:
-            continue
-        # Regler enligt PostNord:
-        # - Postnummertyp S får utdelning varje dag (lägger till alla dagar som inte är H)
-        # - Postnummertyp X får utdelning på X dagar
-        # - Postnummertyp Y får utdelning på Y dagar
-        # - H = helgdag/ingen utdelning
-        if pattern_name == "H":
-            # ingen utdelning denna dag
-            continue
-        if postnummer_typ == "S":
-            utdelningsdagar.append(planned_date)
-        elif postnummer_typ == pattern_name:
-            utdelningsdagar.append(planned_date)
-
-    return utdelningsdagar
-
+# --- Main funktion ---
 def main():
-    # Hämta data från API
+    idag = datetime.date.today()
+    slutdatum = idag + datetime.timedelta(days=90)
+
+    print(f"Hämtar postnummerinfo för {POSTNUMMER}...")
     postalcode_info = get_postalcode_info(POSTNUMMER)
-    sortpatterns = get_sortpatterns(idag, slutdatum)
+    print("Postnummerinfo:", postalcode_info)
 
-    # Beräkna utdelningsdagar
-    utdelningsdagar = calculate_delivery_days(postalcode_info, sortpatterns)
-    print(f"Utdelningsdagar (totalt {len(utdelningsdagar)}): {utdelningsdagar}")
+    print(f"Hämtar sorteringsmönster från {idag} till {slutdatum}...")
+    sort_patterns = get_sort_patterns(idag, slutdatum)
+    print(f"Hämtade {len(sort_patterns)} sorteringsdagar.")
 
-    # Skapa kalender
+    post_pattern = postalcode_info.get("patternName")
+    if not post_pattern:
+        raise Exception("Kunde inte hitta postnummerns sorteringsmönster (X/Y/S).")
+
+    print(f"Postnummer {POSTNUMMER} har sorteringsmönster: {post_pattern}")
+
+    # --- Skapa kalender ---
     cal = Calendar()
     cal.add("prodid", "-//Postutdelning//SE")
     cal.add("version", "2.0")
 
-    for day in utdelningsdagar:
-        dt = datetime.datetime.strptime(day, "%Y-%m-%d").date()
-        event = Event()
-        event.add("summary", "Postutdelning 📬")
-        event.add("dtstart", dt)
-        event.add("dtend", dt + datetime.timedelta(days=1))
-        event.add("dtstamp", datetime.datetime.now())
-        cal.add_component(event)
+    utdelningsdagar = 0
 
-    # Spara kalenderfil
+    for datum_str, pattern in sort_patterns.items():
+        # Regeln från dokumentationen:
+        # Om dagen är X och postnumrets pattern är X eller S → utdelning
+        # Om dagen är Y och postnumrets pattern är Y eller S → utdelning
+        # H är helg/helgdag, ingen utdelning
+        if pattern == "H":
+            continue
+        if post_pattern == "S" or post_pattern == pattern:
+            dt = datetime.datetime.strptime(datum_str, "%Y-%m-%d").date()
+            event = Event()
+            event.add("summary", "Postutdelning 📬")
+            event.add("dtstart", dt)
+            event.add("dtend", dt + datetime.timedelta(days=1))
+            event.add("dtstamp", datetime.datetime.now())
+            cal.add_component(event)
+            utdelningsdagar += 1
+
+    # --- Spara kalenderfil ---
     os.makedirs("docs", exist_ok=True)
-    with open("docs/postutdelning.ics", "wb") as f:
+    ics_path = "docs/postutdelning.ics"
+    with open(ics_path, "wb") as f:
         f.write(cal.to_ical())
 
-    print(f"Kalenderfil skapad med {len(utdelningsdagar)} utdelningsdagar.")
+    print(f"Kalenderfil skapad med {utdelningsdagar} utdelningsdagar på {ics_path}.")
 
 if __name__ == "__main__":
     main()
