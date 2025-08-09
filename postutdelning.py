@@ -1,86 +1,62 @@
 import requests
-import time
 import json
-import os
-from datetime import datetime, timedelta
+import time
+import logging
+from pathlib import Path
 
-# === KONFIGURATION ===
-API_KEY = "DIN_API_KEY_HÄR"
-CACHE_TTL = 3600  # sekunder (1 timme)
-CACHE_FILE = "cache.json"
-LOG_FILE = "app.log"
+# --- Konfiguration ---
+API_KEY = "DIN_API_KEY"
+BASE_URL = "https://exempel.com/rest/location/v1/surcharge/manage"
+CACHE_FILE = Path("health_cache.json")
+LOG_FILE = "script.log"
 
-# === HJÄLPFUNKTIONER ===
-def log(message):
-    """Logga med tidsstämpel till fil."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {message}\n")
-    print(f"[{timestamp}] {message}")
+# --- Logging ---
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-def load_cache():
-    """Läs cache från fil."""
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def fetch_health():
+    """Hämtar hälsostatus från API:t med caching och felhantering."""
+    # Kolla cache
+    if CACHE_FILE.exists():
+        try:
+            with open(CACHE_FILE, "r") as f:
+                data = json.load(f)
+                # Om cachen är mindre än 1 timme gammal, använd den
+                if time.time() - data["timestamp"] < 3600:
+                    logging.info("Använder cache-data för health check.")
+                    return data["response"]
+        except Exception as e:
+            logging.warning(f"Cache-läsfel: {e}")
 
-def save_cache(cache):
-    """Spara cache till fil."""
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
+    # Hämtar från API
+    url = f"{BASE_URL}/health?apikey={API_KEY}"
+    while True:
+        try:
+            logging.info(f"Hämtar health check från {url}")
+            response = requests.get(url, timeout=10)
+            if response.status_code == 429:
+                logging.warning("API-limit nådd. Väntar 60 sek...")
+                time.sleep(60)
+                continue
+            response.raise_for_status()
+            result = response.json()
 
-def health_check():
-    """Kontrollera API-hälsa."""
-    url = f"https://host.example.com/rest/location/v1/surcharge/manage/health?apikey={API_KEY}"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        log(f"Health check OK: {data}")
-        return True
-    except requests.exceptions.RequestException as e:
-        log(f"Health check FAILED: {e}")
-        return False
+            # Spara i cache
+            with open(CACHE_FILE, "w") as f:
+                json.dump({"timestamp": time.time(), "response": result}, f)
 
-def get_postal_surcharge(postal_code):
-    """Hämta surcharge-data för ett postnummer med cache."""
-    cache = load_cache()
-    now = datetime.now()
+            logging.info("Health check hämtad och cachad.")
+            return result
+        except requests.RequestException as e:
+            logging.error(f"Fel vid API-anrop: {e}")
+            time.sleep(10)
 
-    # Kolla om cache finns och är färsk
-    if postal_code in cache:
-        entry = cache[postal_code]
-        if now - datetime.fromisoformat(entry["timestamp"]) < timedelta(seconds=CACHE_TTL):
-            log(f"Använder cache för {postal_code}")
-            return entry["data"]
-
-    # Annars hämta från API
-    url = f"https://host.example.com/rest/location/v1/surcharge/manage/{postal_code}?apikey={API_KEY}"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        log(f"Hämtat data för {postal_code} från API")
-        cache[postal_code] = {"timestamp": now.isoformat(), "data": data}
-        save_cache(cache)
-        return data
-    except requests.exceptions.RequestException as e:
-        log(f"Fel vid hämtning för {postal_code}: {e}")
-        return None
-
-# === MAIN ===
 def main():
-    if not health_check():
-        log("API ej tillgängligt – avslutar.")
-        return
-
-    test_postcode = "12345"
-    data = get_postal_surcharge(test_postcode)
-    if data:
-        log(f"Resultat för {test_postcode}: {data}")
-    else:
-        log(f"Ingen data för {test_postcode}")
+    health_data = fetch_health()
+    print(json.dumps(health_data, indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
     main()
