@@ -44,15 +44,31 @@ def health_check():
         raise Exception(f"Health Check misslyckades med statuskod {response.status_code}: {response.text}")
 
 # --- Hämta info om postnummer (X, Y, S) ---
-def get_postalcode_info(postnummer):
+#def get_postalcode_info(postnummer):
+#    url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
+#    params = {
+#        "ids": f"postalcode:{postnummer}"
+#    }
+#   data = get_with_retry(url, params=params)
+#   if not data or "data" not in data or len(data["data"]) == 0:
+#       raise Exception("Postnummerdata saknas eller ogiltigt format.")
+#   return data["data"][0]  # första posten
+
+def get_postalcode_info_once(postnummer):
     url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
     params = {
         "ids": f"postalcode:{postnummer}"
     }
-    data = get_with_retry(url, params=params)
+    print(f"Försöker hämta info för postnummer {postnummer}...")
+    response = requests.get(url, headers=HEADERS, params=params)
+    print("Statuskod:", response.status_code)
+    print("Headers:", response.headers)
+    print("Svar:", response.text)
+    response.raise_for_status()
+    data = response.json()
     if not data or "data" not in data or len(data["data"]) == 0:
         raise Exception("Postnummerdata saknas eller ogiltigt format.")
-    return data["data"][0]  # första posten
+    return data["data"][0]
 
 # --- Hämta sorteringsmönster (X/Y/H) för datumintervallet ---
 def get_sort_patterns(from_date, to_date):
@@ -75,7 +91,9 @@ def main():
     slutdatum = idag + datetime.timedelta(days=90)
 
     print(f"Hämtar postnummerinfo för {POSTNUMMER}...")
-    postalcode_info = get_postalcode_info(POSTNUMMER)
+    #postalcode_info = get_postalcode_info(POSTNUMMER)
+    postalcode_info = get_postalcode_info_once(POSTNUMMER)
+
     print("Postnummerinfo:", postalcode_info)
 
     print(f"Hämtar sorteringsmönster från {idag} till {slutdatum}...")
