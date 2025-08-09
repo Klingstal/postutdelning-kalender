@@ -2,76 +2,125 @@ import requests
 import datetime
 from icalendar import Calendar, Event
 import os
+import time
 
 # --- KONFIGURATION ---
-POSTNUMMER = "56632"  # Ditt postnummer
-API_KEY = "447ae136a7bad7f1849b3489e90edc45"  # Din API-nyckel
+POSTNUMMER = "56632"
+API_KEY = "447ae136a7bad7f1849b3489e90edc45"
 
 # --- Datumintervall ---
 idag = datetime.date.today()
 slutdatum = idag + datetime.timedelta(days=90)
 
-# --- Hämta sorteringsmönster (X, Y, H) ---
-sortpatterns_url = "https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
-params_sort = {
-    "apikey": API_KEY,
-    "fromdate": idag.strftime("%Y-%m-%d"),
-    "todate": slutdatum.strftime("%Y-%m-%d")
-}
-r = requests.get(sortpatterns_url, params=params_sort)
-r.raise_for_status()
-sortpatterns = r.json()
+# --- Hämta postnummer-typ (X, Y eller S) med retry vid 429 ---
+def get_postalcode_info(postnummer):
+    url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
+    params = {
+        "apikey": API_KEY,
+        "ids": f"postalcode:{postnummer}"
+    }
+    attempts = 5
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"Postnummerdata: {data}")  # debug
+            return data
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:
+                wait = 10
+                print(f"Rate limit reached (429). Väntar {wait} sekunder och försöker igen... (försök {attempt+1} av {attempts})")
+                time.sleep(wait)
+            else:
+                print(f"HTTPError vid hämtning av postnummerinfo: {e}")
+                raise
+    raise Exception("Misslyckades hämta postnummerinfo efter flera försök")
 
-# --- Hämta postnummer-typ (X, Y eller S) ---
-postalcode_url = "https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
-params_postal = {
-    "apikey": API_KEY,
-    "ids": f"postalcode:{POSTNUMMER}"
-}
-r2 = requests.get(postalcode_url, params=params_postal)
-r2.raise_for_status()
-postalcode_data = r2.json()
+# --- Hämta sorteringsmönster (X, Y eller H dagar) med retry vid 429 ---
+def get_sortpatterns(from_date, to_date):
+    url = "https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
+    params = {
+        "apikey": API_KEY,
+        "fromdate": from_date.strftime("%Y-%m-%d"),
+        "todate": to_date.strftime("%Y-%m-%d")
+    }
+    attempts = 5
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"Sorteringsmönsterdata: {data}")  # debug
+            return data
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:
+                wait = 10
+                print(f"Rate limit reached (429). Väntar {wait} sekunder och försöker igen... (försök {attempt+1} av {attempts})")
+                time.sleep(wait)
+            else:
+                print(f"HTTPError vid hämtning av sorteringsmönster: {e}")
+                raise
+    raise Exception("Misslyckades hämta sorteringsmönster efter flera försök")
 
-# Extrahera postnummer-typ
-postnummer_typ = None
-if "postalCodes" in postalcode_data and len(postalcode_data["postalCodes"]) > 0:
-    postnummer_typ = postalcode_data["postalCodes"][0].get("type")
-else:
-    raise ValueError("Postnummer saknas eller ogiltigt i API-svaret")
+# --- Tolka vilka dagar som är utdelningsdagar för postnumret ---
+def calculate_delivery_days(postalcode_info, sortpatterns):
+    # Hämta typen av postnummer (X, Y eller S)
+    postnummer_typ = None
+    if postalcode_info and len(postalcode_info) > 0:
+        postnummer_typ = postalcode_info[0].get("postalCodeType", None)
+    print(f"Postnummertyp: {postnummer_typ}")
 
-print(f"Postnummer {POSTNUMMER} är av typ: {postnummer_typ}")
+    utdelningsdagar = []
+    for pattern in sortpatterns:
+        pattern_name = pattern.get("patternName", None)
+        planned_date = pattern.get("plannedDate", None)
+        if planned_date is None or pattern_name is None:
+            continue
+        # Regler enligt PostNord:
+        # - Postnummertyp S får utdelning varje dag (lägger till alla dagar som inte är H)
+        # - Postnummertyp X får utdelning på X dagar
+        # - Postnummertyp Y får utdelning på Y dagar
+        # - H = helgdag/ingen utdelning
+        if pattern_name == "H":
+            # ingen utdelning denna dag
+            continue
+        if postnummer_typ == "S":
+            utdelningsdagar.append(planned_date)
+        elif postnummer_typ == pattern_name:
+            utdelningsdagar.append(planned_date)
 
-# --- Beräkna utdelningsdagar ---
-utdelningsdagar = []
-for pattern in sortpatterns:
-    datum = pattern['plannedDate']       # Datum som str "YYYY-MM-DD"
-    sort_type = pattern['patternName']   # T.ex. "X", "Y", "H"
-    if sort_type == 'H':
-        # Ingen utdelning på helg/helgdagar
-        continue
-    if postnummer_typ == 'S' or sort_type == postnummer_typ:
-        utdelningsdagar.append(datum)
+    return utdelningsdagar
 
-print(f"Antal utdelningsdagar hittade: {len(utdelningsdagar)}")
+def main():
+    # Hämta data från API
+    postalcode_info = get_postalcode_info(POSTNUMMER)
+    sortpatterns = get_sortpatterns(idag, slutdatum)
 
-# --- Skapa kalender ---
-cal = Calendar()
-cal.add("prodid", "-//Postutdelning//SE")
-cal.add("version", "2.0")
+    # Beräkna utdelningsdagar
+    utdelningsdagar = calculate_delivery_days(postalcode_info, sortpatterns)
+    print(f"Utdelningsdagar (totalt {len(utdelningsdagar)}): {utdelningsdagar}")
 
-for day in utdelningsdagar:
-    dt = datetime.datetime.strptime(day, "%Y-%m-%d").date()
-    event = Event()
-    event.add("summary", "Postutdelning 📬")
-    event.add("dtstart", dt)
-    event.add("dtend", dt + datetime.timedelta(days=1))
-    event.add("dtstamp", datetime.datetime.now())
-    cal.add_component(event)
+    # Skapa kalender
+    cal = Calendar()
+    cal.add("prodid", "-//Postutdelning//SE")
+    cal.add("version", "2.0")
 
-# --- Spara kalenderfil ---
-os.makedirs("docs", exist_ok=True)
-kalenderfil = "docs/postutdelning.ics"
-with open(kalenderfil, "wb") as f:
-    f.write(cal.to_ical())
+    for day in utdelningsdagar:
+        dt = datetime.datetime.strptime(day, "%Y-%m-%d").date()
+        event = Event()
+        event.add("summary", "Postutdelning 📬")
+        event.add("dtstart", dt)
+        event.add("dtend", dt + datetime.timedelta(days=1))
+        event.add("dtstamp", datetime.datetime.now())
+        cal.add_component(event)
 
-print(f"Kalenderfil skapad: {kalenderfil}")
+    # Spara kalenderfil
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/postutdelning.ics", "wb") as f:
+        f.write(cal.to_ical())
+
+    print(f"Kalenderfil skapad med {len(utdelningsdagar)} utdelningsdagar.")
+
+if __name__ == "__main__":
+    main()
