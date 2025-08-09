@@ -15,21 +15,28 @@ HEADERS = {
 }
 
 # --- Funktion för GET med retry vid 429 ---
-def get_with_retry(url, params=None, max_attempts=5, wait_sec=30):
+def get_with_retry(url, params=None, max_attempts=5, default_wait_sec=30):
     attempts = 0
     while attempts < max_attempts:
         try:
             response = requests.get(url, headers=HEADERS, params=params)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", default_wait_sec)
+                print(f"Rate limit reached (429). Retry-After: {retry_after} sekunder. Väntar och försöker igen... (försök {attempts + 1} av {max_attempts})")
+                time.sleep(int(retry_after))
                 attempts += 1
-                print(f"Rate limit reached (429). Väntar {wait_sec} sekunder och försöker igen... (försök {attempts} av {max_attempts})")
-                time.sleep(wait_sec)
-            else:
-                print(f"HTTPError: {e} - {response.text}")
+                continue
+            response.raise_for_status()
+            try:
+                json_data = response.json()
+                print(f"Response från {url} med params {params}: {json_data}")  # Debug print av svar
+                return json_data
+            except Exception as e:
+                print(f"Fel vid parsning av JSON: {e}")
                 raise
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTPError vid anrop till {url}: {e} - Response text: {response.text}")
+            raise
     raise Exception(f"Misslyckades efter {max_attempts} försök p.g.a. rate limit (429).")
 
 # --- Hämta info om postnummer (X, Y, S) ---
