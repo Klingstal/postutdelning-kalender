@@ -5,7 +5,7 @@ import logging
 import os
 
 # === KONFIGURATION ===
-API_KEY = "DIN_API_NYCKEL_HÄR"
+API_KEY = "447ae136a7bad7f1849b3489e90edc45"
 CACHE_FILE = "health_cache.json"
 CACHE_TTL = 3600  # sekunder (1 timme)
 LOG_FILE = "health_check.log"
