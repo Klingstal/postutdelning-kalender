@@ -1,71 +1,57 @@
 import requests
-import json
-import time
-import logging
-import os
+from datetime import datetime, timedelta
+from ics import Calendar, Event
 
-# === KONFIGURATION ===
+# ---- KONFIG ----
 API_KEY = "447ae136a7bad7f1849b3489e90edc45"
-CACHE_FILE = "health_cache.json"
-CACHE_TTL = 3600  # sekunder (1 timme)
-LOG_FILE = "health_check.log"
+POSTNUMMER = "56632"
+DAGAR_FRAMÅT = 90  # hur långt fram vi ska kolla
+FILNAMN = "postutdelning.ics"
+# ----------------
 
-# === LOGGNING ===
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+def hamta_utdelningsdagar():
+    idag = datetime.today().strftime("%Y-%m-%d")
+    slutdatum = (datetime.today() + timedelta(days=DAGAR_FRAMÅT)).strftime("%Y-%m-%d")
+    
+    url = (
+        f"https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
+        f"?apikey={API_KEY}"
+        f"&fromdate={idag}"
+        f"&todate={slutdatum}"
+        f"&postcode={POSTNUMMER}"
+    )
 
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Om datan är gammal, returnera None
-            if time.time() - data.get("timestamp", 0) < CACHE_TTL:
-                return data.get("response")
-        except Exception as e:
-            logging.warning(f"Kunde inte läsa cache: {e}")
-    return None
-
-def save_cache(response):
+    r = requests.get(url)
+    r.raise_for_status()
+    data = r.json()
+    
+    dagar = []
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"timestamp": time.time(), "response": response}, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"Kunde inte spara cache: {e}")
+        patterns = data["sortpatterns"]["deliverydays"]
+        for d in patterns:
+            datum = d["date"]
+            dagar.append(datum)
+    except KeyError:
+        print("Fel: API-svaret har inte rätt struktur")
+    
+    return dagar
 
-def health_check():
-    # Försök använda cache först
-    cached = load_cache()
-    if cached:
-        logging.info("Använder cachead data")
-        return cached
-
-    url = f"https://host/rest/location/v1/surcharge/manage/health?apikey={API_KEY}"
-    try:
-        logging.info(f"Anropar: {url}")
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        save_cache(data)
-        return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Nätverksfel: {e}")
-    except Exception as e:
-        logging.error(f"Oväntat fel: {e}")
-    return None
-
-def main():
-    result = health_check()
-    if result:
-        logging.info(f"API-svar: {json.dumps(result, ensure_ascii=False, indent=2)}")
-    else:
-        logging.error("Kunde inte hämta data.")
+def skapa_ics(dagar):
+    c = Calendar()
+    for dag in dagar:
+        e = Event()
+        e.name = "Postutdelning"
+        e.begin = dag
+        e.make_all_day()
+        c.events.add(e)
+    
+    with open(FILNAMN, "w", encoding="utf-8") as f:
+        f.writelines(c)
+    print(f"ICS-fil skapad: {FILNAMN}")
 
 if __name__ == "__main__":
-    main()
+    dagar = hamta_utdelningsdagar()
+    if dagar:
+        skapa_ics(dagar)
+    else:
+        print("Inga dagar hittades.")
