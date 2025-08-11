@@ -22,7 +22,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install dependencies
-        run: pip install requests icalendar
+        run: pip install requests icalendar ics
 
       - name: Kör uppdateringsskript
         run: python postutdelning.py
