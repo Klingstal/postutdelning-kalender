@@ -2,20 +2,21 @@ import requests
 from datetime import datetime, timedelta
 from icalendar import Calendar, Event
 import os
+import sys
 
 # ===== KONFIGURATION =====
-API_KEY = os.environ.get("POSTNORD_API_KEY", "f80a7ba1730cde0a283da52331695322")
-POSTNUMMER = "56632"  # Ändra till ditt postnummer
+API_KEY = os.environ.get("POSTNORD_API_KEY", "DIN_API_NYCKEL_HÄR")
+POSTNUMMER = "24600"  # Ändra till ditt postnummer
 ANTAL_DAGAR_FRAMÅT = 60  # Hur långt fram i tiden kalendern ska innehålla utdelningsdagar
 ICS_FIL = "docs/postutdelning.ics"
 
+# ===== GEMENSAM HEADER =====
+HEADERS = {"apikey": API_KEY}
+
 # ===== HÄMTA POSTNUMMER-TYP (X, Y, S) =====
 def get_postnummer_typ(postnummer):
-    url = (
-        f"https://api2.postnord.com/rest/masterdata/gim/v2/postalcode"
-        f"?apikey={API_KEY}&ids=postalcode:{postnummer}"
-    )
-    r = requests.get(url)
+    url = f"https://api2.postnord.com/rest/masterdata/gim/v2/postalcode?ids=postalcode:{postnummer}"
+    r = requests.get(url, headers=HEADERS)
     r.raise_for_status()
     data = r.json()
     try:
@@ -27,17 +28,16 @@ def get_postnummer_typ(postnummer):
 def get_sort_patterns(from_date, to_date):
     url = (
         f"https://api2.postnord.com/rest/system/nps/v1/ppp/expose/sortpatterns/daterange"
-        f"?apikey={API_KEY}&fromdate={from_date}&todate={to_date}"
+        f"?fromdate={from_date}&todate={to_date}"
     )
-    r = requests.get(url)
+    r = requests.get(url, headers=HEADERS)
     r.raise_for_status()
     data = r.json()
     result = {}
     try:
-        for item in data["sortPatterns"]:
-            date_str = item["date"]
-            result[date_str] = item["pattern"]
-    except KeyError:
+        for item in data.get("sortPatterns", []):
+            result[item["date"]] = item["pattern"]
+    except (KeyError, TypeError):
         raise ValueError("Felaktigt svar från sortpatterns API")
     return result
 
@@ -74,16 +74,28 @@ def create_ics(delivery_days):
 
 # ===== HUVUDKÖRNING =====
 if __name__ == "__main__":
+    if not API_KEY or API_KEY == "DIN_API_NYCKEL_HÄR":
+        print("❌ API-nyckel saknas. Sätt miljövariabeln POSTNORD_API_KEY.")
+        sys.exit(1)
+
     today = datetime.today().date()
     end_date = today + timedelta(days=ANTAL_DAGAR_FRAMÅT)
 
-    post_typ = get_postnummer_typ(POSTNUMMER)
-    print(f"Postnummer {POSTNUMMER} har typ {post_typ}")
+    try:
+        post_typ = get_postnummer_typ(POSTNUMMER)
+        print(f"📦 Postnummer {POSTNUMMER} har typ {post_typ}")
 
-    patterns = get_sort_patterns(today.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        patterns = get_sort_patterns(today.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        delivery_days = calculate_delivery_days(post_typ, patterns)
 
-    delivery_days = calculate_delivery_days(post_typ, patterns)
-    print(f"Utdelningsdagar: {delivery_days}")
+        print(f"📅 Utdelningsdagar ({len(delivery_days)} dagar): {delivery_days}")
 
-    create_ics(delivery_days)
-    print(f"ICS-fil skapad: {ICS_FIL}")
+        create_ics(delivery_days)
+        print(f"✅ ICS-fil skapad: {ICS_FIL}")
+
+    except requests.HTTPError as e:
+        print(f"❌ HTTP-fel: {e} - Svar: {e.response.text}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Fel: {e}")
+        sys.exit(1)
