@@ -4,8 +4,8 @@ from icalendar import Calendar, Event
 import os
 
 # ===== KONFIGURATION =====
-API_KEY = os.environ.get("POSTNORD_API_KEY", "DIN_API_KEY_HÄR")
-POSTNUMMER = "24600"  # Ändra till ditt postnummer
+API_KEY = os.environ.get("POSTNORD_API_KEY", "f80a7ba1730cde0a283da52331695322")
+POSTNUMMER = "56632"  # Ändra till ditt postnummer
 ANTAL_DAGAR_FRAMÅT = 60  # Hur långt fram i tiden kalendern ska innehålla utdelningsdagar
 ICS_FIL = "docs/postutdelning.ics"
 
